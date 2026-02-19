@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "madevolve"
+version = "0.1.0"
+description = "A General-Purpose LLM-Driven Evolution Framework for Code Optimization"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "MadEvolve Team"}
+]
+keywords = [
+    "evolution",
+    "genetic-programming",
+    "llm",
+    "code-generation",
+    "optimization",
+    "meta-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "scipy>=1.9.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "tiktoken>=0.5.0",
+    "scikit-learn>=1.0.0",
+    # New dependencies for enhanced features
+    "aiosqlite>=0.19.0",  # Async SQLite for caching and persistence
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+google = [
+    "google-genai>=1.0.0",
+]
+optimizer = [
+    "optuna>=3.0.0",  # Bayesian optimization
+]
+parsing = [
+    "tree-sitter>=0.20.0",  # Syntax tree parsing
+    "tree-sitter-python>=0.20.0",  # Python grammar
+]
+similarity = [
+    "zss>=1.2.0",  # Tree edit distance for structural comparison
+]
+full = [
+    "madevolve[optimizer,parsing,similarity]",
+]
+all = [
+    "madevolve[dev,google,full]",
+]
+
+[project.urls]
+Homepage = "https://github.com/madevolve/madevolve"
+Documentation = "https://github.com/madevolve/madevolve#readme"
+Repository = "https://github.com/madevolve/madevolve"
+Issues = "https://github.com/madevolve/madevolve/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["madevolve*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

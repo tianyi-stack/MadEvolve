@@ -124,6 +124,10 @@ def main():
             config_dict = load_config(args.config)
             config = build_config_from_dict(config_dict)
 
+            # Expose config path so evaluator scripts can read extra fields
+            import os
+            os.environ['MADEVOLVE_CONFIG_PATH'] = str(Path(args.config).resolve())
+
             # Create a timestamped run subfolder for fresh runs;
             # when resuming, use the output path as-is (user passes the exact run dir).
             if args.resume:

@@ -218,6 +218,7 @@ class EvolutionOrchestrator:
                             features=features, parent_id=prog.parent_id, generation=0,
                         )
 
+                    self._save_best_program()
                     logger.info(f"Reused {len(existing)} existing gen_0 programs (best={self._best_score:.4f})")
                     print_substep(f"Found {len(existing)} existing baseline(s), best score: {self._best_score:.4f}")
                 else:
@@ -313,6 +314,7 @@ class EvolutionOrchestrator:
 
             self._best_program_id = program_id
             self._best_score = result.combined_score
+            self._save_best_program()
 
             print_substep(f"Baseline score: {result.combined_score:.4f}")
             logger.info(f"Baseline program registered: score={result.combined_score:.4f}")
@@ -739,6 +741,7 @@ class EvolutionOrchestrator:
                 improved = True
 
                 self.session.set_best_program(pending.program_id, evaluation.combined_score)
+                self._save_best_program()
             else:
                 self._stagnation_counter += 1
 
@@ -804,6 +807,58 @@ class EvolutionOrchestrator:
             improvements=stats.get("improvements", 0),
         )
 
+    def _save_best_program(self):
+        """Save the current best program to the best/ directory with full results and artifacts."""
+        if not self._best_program_id:
+            return
+
+        best_program = self._artifact_store.get(self._best_program_id)
+        if not best_program:
+            return
+
+        import json
+        import shutil
+
+        best_dir = self.results_dir / "best"
+        best_dir.mkdir(exist_ok=True)
+
+        # Save code
+        with open(best_dir / "best.py", "w") as f:
+            f.write(best_program.code)
+
+        # Save full evaluation results
+        best_info = {
+            "program_id": best_program.program_id,
+            "generation": best_program.generation,
+            "combined_score": best_program.combined_score,
+            "public_metrics": best_program.public_metrics,
+            "private_metrics": best_program.private_metrics,
+            "text_feedback": best_program.text_feedback,
+            "parent_id": best_program.parent_id,
+            "created_at": best_program.created_at,
+            "metadata": best_program.metadata,
+        }
+        with open(best_dir / "result.json", "w") as f:
+            json.dump(best_info, f, indent=2)
+
+        # Copy evaluation artifacts (HTML plots, logs, etc.)
+        eval_dir = (
+            self.results_dir
+            / "evaluations"
+            / f"gen_{best_program.generation}"
+            / best_program.program_id
+        )
+        if eval_dir.exists():
+            # Clear previous artifacts (they belong to the old best)
+            for old in best_dir.iterdir():
+                if old.name not in ("best.py", "result.json"):
+                    old.unlink()
+            for artifact in eval_dir.iterdir():
+                if artifact.name not in ("candidate.py", "__pycache__") and artifact.is_file():
+                    shutil.copy2(artifact, best_dir / artifact.name)
+
+        logger.info(f"Saved best program {best_program.program_id} (score={best_program.combined_score:.4f}) to {best_dir}")
+
     def _save_checkpoint(self):
         """Save current state to checkpoint."""
         # Update component states
@@ -839,15 +894,9 @@ class EvolutionOrchestrator:
         # Export history
         history_path = self.session.export_history()
 
-        # Save best program
+        # Final save of best program (ensures best/ is up to date)
         print_substep("Saving best program...")
-        if self._best_program_id:
-            best_program = self._artifact_store.get(self._best_program_id)
-            if best_program:
-                best_dir = self.results_dir / "best_program"
-                best_dir.mkdir(exist_ok=True)
-                with open(best_dir / "best.py", "w") as f:
-                    f.write(best_program.code)
+        self._save_best_program()
 
         # Generate report if enabled
         report_path = None

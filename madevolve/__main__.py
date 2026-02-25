@@ -58,6 +58,9 @@ def build_config_from_dict(data: Dict[str, Any]) -> EvolutionConfig:
 
 def main():
     """Main entry point."""
+    from dotenv import find_dotenv, load_dotenv
+    load_dotenv(find_dotenv(usecwd=True))
+
     parser = argparse.ArgumentParser(
         description="MadEvolve: LLM-Driven Evolution Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -121,9 +124,20 @@ def main():
             config_dict = load_config(args.config)
             config = build_config_from_dict(config_dict)
 
+            # Create a timestamped run subfolder for fresh runs;
+            # when resuming, use the output path as-is (user passes the exact run dir).
+            if args.resume:
+                run_dir = args.output
+            else:
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                run_dir = str(Path(args.output) / timestamp)
+
+            print(f"Run directory: {run_dir}")
+
             orchestrator = EvolutionOrchestrator(
                 config=config,
-                results_dir=args.output,
+                results_dir=run_dir,
                 checkpoint_path=args.resume,
             )
 

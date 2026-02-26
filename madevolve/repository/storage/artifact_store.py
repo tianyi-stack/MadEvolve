@@ -58,7 +58,7 @@ class ArtifactStore:
         self.config = container.config.storage
         db_path = Path(container.results_dir) / self.config.db_path
 
-        self._conn = sqlite3.connect(str(db_path), timeout=30.0)
+        self._conn = sqlite3.connect(str(db_path), timeout=30.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
         create_schema(self._conn)

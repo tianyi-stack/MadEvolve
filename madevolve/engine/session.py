@@ -242,7 +242,7 @@ class EvolutionSession:
             return
 
         self._state.current_generation = generation
-        self._state.total_programs_evaluated += programs_evaluated
+        self._state.total_programs_evaluated = programs_evaluated
         self._state.total_improvements += improvements
 
         if best_score > self._state.best_score:

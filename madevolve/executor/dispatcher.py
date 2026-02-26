@@ -224,14 +224,18 @@ class LocalRunner:
         evaluator_script = str(Path(evaluator_script).resolve())
         code_path = str(Path(code_path).resolve())
 
-        # Build command
-        cmd = ["python", evaluator_script, code_path]
+        # Resolve work_dir to absolute so evaluator gets a unique results_dir
+        work_dir_abs = str(Path(work_dir).resolve())
+
+        # Build command — pass --results_dir so each eval gets isolated log paths
+        cmd = ["python", evaluator_script, code_path, "--results_dir", work_dir_abs]
 
         if self.config.conda_env:
             # Activate conda environment
             cmd = [
                 "conda", "run", "-n", self.config.conda_env,
                 "python", evaluator_script, code_path,
+                "--results_dir", work_dir_abs,
             ]
 
         # Set up output files
@@ -420,11 +424,11 @@ class SlurmRunner:
                 f"conda activate {self.config.conda_env}",
             ])
 
-        # Run command
+        # Run command — pass --results_dir so each eval gets isolated log paths
         lines.extend([
             "",
             f"cd {work_dir}",
-            f"python {evaluator_script} {code_path}",
+            f"python {evaluator_script} {code_path} --results_dir {work_dir}",
         ])
 
         script_path.write_text("\n".join(lines))

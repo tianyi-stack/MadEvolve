@@ -8,8 +8,11 @@ and strategic analysis.
 
 import logging
 import os
+import queue
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,6 +44,18 @@ class PendingJob:
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
+
+
+@dataclass
+class PreparedCandidate:
+    """A candidate fully prepared by the LLM, ready for evaluation submission."""
+    program_id: str
+    code: str
+    generation: int
+    parent_id: str
+    patch_mode: str
+    model_used: str
+    metadata: Dict[str, Any]
 
 
 @dataclass
@@ -119,6 +134,7 @@ class EvolutionOrchestrator:
         self._best_program_id: Optional[str] = None
         self._best_score: float = float("-inf")
         self._stagnation_counter: int = 0
+        self._state_lock = threading.RLock()
 
         # Initialize components lazily
         self._gateway = None
@@ -190,7 +206,14 @@ class EvolutionOrchestrator:
         start_gen = self.session.state.current_generation if self.session.state else 0
         total_gens = self.config.num_generations
 
-        logger.info(f"Starting evolution from generation {start_gen} to {total_gens}")
+        # total_budget: number of candidates to submit (not idle loop iterations)
+        total_budget = total_gens
+        max_parallel = self.config.executor.max_parallel_jobs
+
+        logger.info(
+            f"Starting evolution from generation {start_gen}, "
+            f"budget={total_budget} candidates, max_parallel={max_parallel}"
+        )
 
         try:
             # Bootstrap generation 0 if needed
@@ -225,25 +248,114 @@ class EvolutionOrchestrator:
                     self._bootstrap_initial_generation()
                 start_gen = 1
 
-            # Main evolution loop
-            for generation in range(start_gen, total_gens + 1):
-                print_generation_header(generation, total_gens)
+            # ── Event-driven main loop with LLM prefetch ──
+            submission_count = 0
+            last_stats_gen = start_gen - 1
 
-                # Submit new jobs for this generation
-                self._submit_generation(generation)
+            # Determine number of LLM producer threads
+            num_producers = self.config.executor.num_llm_threads
+            if num_producers <= 0:
+                num_producers = min(max_parallel, 4)
 
-                # Poll and process completed jobs
-                self._process_pending_jobs()
+            prefetch_queue: queue.Queue[PreparedCandidate] = queue.Queue(maxsize=max_parallel * 2)
+            producer_stop = threading.Event()
 
-                # Population maintenance
-                self._population.maybe_migrate(generation)
+            # Thread-safe slot counter for producer workers
+            _slot_lock = threading.Lock()
+            _next_slot = [0]  # mutable container for closure access
 
-                # Checkpointing
-                if generation % self.config.storage.checkpoint_interval == 0:
-                    self._save_checkpoint()
+            def _claim_slot() -> Optional[int]:
+                """Atomically claim the next slot number. Returns None if budget exhausted."""
+                with _slot_lock:
+                    if _next_slot[0] >= total_budget:
+                        return None
+                    slot = _next_slot[0]
+                    _next_slot[0] += 1
+                    return slot
 
-                # Update session state
-                self._update_session_stats(generation)
+            def _producer_worker():
+                """Worker thread: claim slots and prepare candidates via LLM queries."""
+                max_attempts_per_slot = 3
+                while not producer_stop.is_set():
+                    slot = _claim_slot()
+                    if slot is None:
+                        return
+                    gen = slot // max_parallel + start_gen
+                    candidate = None
+                    for attempt in range(max_attempts_per_slot):
+                        if producer_stop.is_set():
+                            return
+                        try:
+                            candidate = self._prepare_candidate(gen)
+                            if candidate is not None:
+                                break
+                        except Exception as e:
+                            logger.warning(
+                                f"Candidate preparation failed (slot {slot}, attempt {attempt + 1}/"
+                                f"{max_attempts_per_slot}): {e}"
+                            )
+                    if candidate is not None:
+                        while not producer_stop.is_set():
+                            try:
+                                prefetch_queue.put(candidate, timeout=2.0)
+                                break
+                            except queue.Full:
+                                continue
+                    else:
+                        logger.warning(f"Candidate slot {slot} failed all preparation attempts")
+
+            producer_pool = ThreadPoolExecutor(max_workers=num_producers, thread_name_prefix="llm-producer")
+            producer_futures: List[Future] = [
+                producer_pool.submit(_producer_worker) for _ in range(num_producers)
+            ]
+
+            def _producers_alive() -> bool:
+                return any(not f.done() for f in producer_futures)
+
+            try:
+                while submission_count < total_budget or self._pending_jobs:
+                    # 1. Fill open eval slots from prefetch queue
+                    while len(self._pending_jobs) < max_parallel and submission_count < total_budget:
+                        try:
+                            candidate = prefetch_queue.get(timeout=1.0)
+                        except queue.Empty:
+                            # Producers might be slow or dead
+                            if not _producers_alive() and prefetch_queue.empty():
+                                break
+                            continue
+                        self._submit_candidate(candidate)
+                        submission_count += 1
+
+                        generation = (submission_count - 1) // max_parallel + start_gen
+                        if generation > last_stats_gen:
+                            total_display_gens = (total_budget - 1) // max_parallel + start_gen
+                            print_generation_header(generation, total_display_gens)
+
+                    # 2. If nothing is running and producers are dead, break
+                    if not self._pending_jobs:
+                        if not _producers_alive() and prefetch_queue.empty():
+                            break
+                        continue
+
+                    # 3. Block until at least one eval completes
+                    self._wait_for_any_completion()
+
+                    # 4. Process completed evaluations (under state_lock)
+                    with self._state_lock:
+                        self._process_pending_jobs()
+
+                    # 5. Periodic maintenance (based on submission count, not inflated counter)
+                    generation = (submission_count - 1) // max_parallel + start_gen if submission_count > 0 else start_gen
+                    if generation > last_stats_gen:
+                        self._population.maybe_migrate(generation)
+                        self._update_session_stats(generation)
+                        if generation % self.config.storage.checkpoint_interval == 0:
+                            self._save_checkpoint()
+                        last_stats_gen = generation
+
+            finally:
+                producer_stop.set()
+                producer_pool.shutdown(wait=True, cancel_futures=True)
 
             # Finalization
             return self._finalize()
@@ -341,76 +453,63 @@ class EvolutionOrchestrator:
 
         return code
 
-    def _submit_generation(self, generation: int):
-        """Submit jobs for a new generation."""
-        max_parallel = self.config.executor.max_parallel_jobs
-        max_attempts = max_parallel * 3  # Avoid infinite loop when patches keep failing
-        attempts = 0
+    def _prepare_candidate(self, generation: int) -> Optional[PreparedCandidate]:
+        """Prepare a candidate: select parent, query LLM, apply patch. Thread-safe.
 
-        while len(self._pending_jobs) < max_parallel and attempts < max_attempts:
-            attempts += 1
-            try:
-                self._submit_single_job(generation)
-            except Exception as e:
-                logger.warning(f"Failed to submit job (attempt {attempts}/{max_attempts}): {e}")
-                continue  # Try remaining attempts instead of abandoning generation
+        Phase 1 (under _state_lock): read shared state — parent selection,
+        patch mode, prompt composition (~100ms).
+        Phase 2 (no lock): LLM query + patch application (10-30s).
+        """
+        # Phase 1: read shared state under lock
+        with self._state_lock:
+            selection = self._selector.sample(
+                generation=generation,
+                artifact_store=self._artifact_store,
+                population=self._population,
+            )
+            if hasattr(selection, "parent"):
+                parent = selection.parent
+                archive_inspirations = selection.archive_inspirations
+                top_k_inspirations = selection.top_k_inspirations
+                diverse_inspirations = getattr(selection, "diverse_inspirations", [])
+            else:
+                parent, archive_inspirations, top_k_inspirations = selection
+                diverse_inspirations = []
 
-        if attempts >= max_attempts and len(self._pending_jobs) == 0:
-            logger.warning(f"Generation {generation}: all {max_attempts} submission attempts failed")
+            patch_mode = self._select_patch_mode()
 
-    def _submit_single_job(self, generation: int):
-        """Submit a single evolution job with retry on extraction failure."""
-        # Select parent and inspirations
-        selection = self._selector.sample(
-            generation=generation,
-            artifact_store=self._artifact_store,
-            population=self._population,
-        )
-        if hasattr(selection, "parent"):
-            parent = selection.parent
-            archive_inspirations = selection.archive_inspirations
-            top_k_inspirations = selection.top_k_inspirations
-            diverse_inspirations = getattr(selection, "diverse_inspirations", [])
-        else:
-            parent, archive_inspirations, top_k_inspirations = selection
-            diverse_inspirations = []
+            prompt = self._composer.compose(
+                parent=parent,
+                archive_inspirations=archive_inspirations,
+                top_k_inspirations=top_k_inspirations,
+                patch_mode=patch_mode,
+                task_description=self.config.task_description,
+                diverse_inspirations=diverse_inspirations,
+            )
+            system_message = self._composer.get_system_message(patch_mode)
 
-        # Select patch mode
-        patch_mode = self._select_patch_mode()
-
+        # Phase 2: LLM query + patch application (no lock, slow)
         print_substep(f"Parent {parent.program_id[:8]}... (score={parent.combined_score:.4f}) | mode={patch_mode}")
 
-        # Compose prompt
-        prompt = self._composer.compose(
-            parent=parent,
-            archive_inspirations=archive_inspirations,
-            top_k_inspirations=top_k_inspirations,
-            patch_mode=patch_mode,
-            task_description=self.config.task_description,
-            diverse_inspirations=diverse_inspirations,
-        )
-
-        system_message = self._composer.get_system_message(patch_mode)
         max_retries = self.config.patch_policy.max_patch_retries
         new_code = None
         total_cost = 0.0
         last_raw_output = ""
         model_used = None
+        last_attempt = 0
 
-        # Build initial conversation history
         conversation_history = [
             {"role": "user", "content": prompt},
         ]
 
         for attempt in range(1, max_retries + 1):
+            last_attempt = attempt
             if attempt == 1:
-                # First attempt: single-turn query
                 response = self._gateway.query(
                     system_message=system_message,
                     user_message=prompt,
                 )
             else:
-                # Subsequent attempts: multi-turn with error feedback
                 response = self._gateway.query_multiturn(
                     messages=conversation_history,
                     system_message=system_message,
@@ -431,7 +530,6 @@ class EvolutionOrchestrator:
                 )
                 logger.warning(f"LLM response truncated (attempt {attempt}/{max_retries}): {error_msg}")
 
-                # Save debug output for truncated attempt
                 debug_dir = self.results_dir / "debug" / f"gen_{generation}"
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_file = debug_dir / f"raw_llm_attempt_{attempt}.txt"
@@ -452,17 +550,13 @@ class EvolutionOrchestrator:
 
             logger.warning(f"Patch extraction failed (attempt {attempt}/{max_retries}): {error_msg}")
 
-            # Save debug output for failed attempt
             debug_dir = self.results_dir / "debug" / f"gen_{generation}"
             debug_dir.mkdir(parents=True, exist_ok=True)
             debug_file = debug_dir / f"raw_llm_attempt_{attempt}.txt"
             debug_file.write_text(response.content)
 
             if attempt < max_retries:
-                # Build mode-aware retry instruction (following ShinkaEvolve pattern)
                 retry_instruction = self._build_retry_message(patch_mode, error_msg)
-
-                # Append assistant response and error feedback to conversation
                 conversation_history.append({"role": "assistant", "content": response.content})
                 conversation_history.append({"role": "user", "content": retry_instruction})
                 print_substep(f"Retrying with error feedback: {error_msg}")
@@ -470,7 +564,7 @@ class EvolutionOrchestrator:
         if new_code is None:
             print_error(f"Failed to apply {patch_mode} patch after {max_retries} attempts")
             logger.warning(f"Failed to apply {patch_mode} patch after {max_retries} attempts")
-            return
+            return None
 
         # Run inner-loop optimization if enabled
         if self._optimizer and self.config.optimization.enabled:
@@ -480,32 +574,52 @@ class EvolutionOrchestrator:
                 self._evaluate_program_quick,
             )
 
-        # Submit evaluation job
         program_id = generate_uid()
-        job_id = self._dispatcher.submit(
+        return PreparedCandidate(
             program_id=program_id,
             code=new_code,
-            evaluator_script=self.config.evaluator_script,
-            work_dir=str(self.results_dir / "evaluations" / f"gen_{generation}" / program_id),
-        )
-
-        # Track pending job with metadata
-        job = PendingJob(
-            job_id=job_id,
-            program_id=program_id,
             generation=generation,
             parent_id=parent.program_id,
-            code=new_code,
             patch_mode=patch_mode,
             model_used=model_used,
-            submit_time=time.time(),
+            metadata={
+                "patch_retries": last_attempt,
+                "llm_total_cost": total_cost,
+                "llm_raw_output": last_raw_output[:2000],
+            },
         )
-        job.metadata = {
-            "patch_retries": attempt,
-            "llm_total_cost": total_cost,
-            "llm_raw_output": last_raw_output[:2000],
-        }
+
+    def _submit_candidate(self, candidate: PreparedCandidate) -> str:
+        """Submit a prepared candidate for evaluation. Fast (milliseconds)."""
+        job_id = self._dispatcher.submit(
+            program_id=candidate.program_id,
+            code=candidate.code,
+            evaluator_script=self.config.evaluator_script,
+            work_dir=str(self.results_dir / "evaluations" / f"gen_{candidate.generation}" / candidate.program_id),
+        )
+
+        job = PendingJob(
+            job_id=job_id,
+            program_id=candidate.program_id,
+            generation=candidate.generation,
+            parent_id=candidate.parent_id,
+            code=candidate.code,
+            patch_mode=candidate.patch_mode,
+            model_used=candidate.model_used,
+            submit_time=time.time(),
+            metadata=candidate.metadata,
+        )
         self._pending_jobs[job_id] = job
+        return job_id
+
+    def _wait_for_any_completion(self, timeout: float = 300.0):
+        """Block until at least one pending job completes."""
+        start = time.time()
+        while time.time() - start < timeout:
+            for job_id in list(self._pending_jobs.keys()):
+                if self._dispatcher.is_complete(job_id):
+                    return
+            time.sleep(0.5)
 
     def _diagnose_extraction_error(self, llm_content: str, patch_mode: str) -> str:
         """Diagnose why code extraction failed from LLM output."""

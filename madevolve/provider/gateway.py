@@ -6,6 +6,7 @@ handling provider routing, model selection, and cost tracking.
 """
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 from madevolve.engine.configuration import ModelConfig
@@ -34,6 +35,8 @@ class ModelGateway:
         self._adapters = {}
         self._selector: Optional[ModelSelector] = None
         self._usage: Dict[str, ProviderUsage] = {}
+        self._adapter_lock = threading.Lock()
+        self._usage_lock = threading.Lock()
 
         self._init_adapters()
         self._init_selector()
@@ -57,14 +60,13 @@ class ModelGateway:
             self._selector = None
 
     def _get_adapter(self, model_name: str):
-        """Get or create adapter for the given model."""
-        # Determine provider from model name
+        """Get or create adapter for the given model (thread-safe)."""
         provider = self._infer_provider(model_name)
 
-        if provider not in self._adapters:
-            self._adapters[provider] = self._create_adapter(provider)
-
-        return self._adapters[provider]
+        with self._adapter_lock:
+            if provider not in self._adapters:
+                self._adapters[provider] = self._create_adapter(provider)
+            return self._adapters[provider]
 
     def _infer_provider(self, model_name: str) -> str:
         """Infer provider from model name."""
@@ -203,11 +205,11 @@ class ModelGateway:
         return response
 
     def _record_usage(self, model: str, response: LLMResponse):
-        """Record usage statistics."""
-        if model not in self._usage:
-            self._usage[model] = ProviderUsage()
-
-        self._usage[model].record(response)
+        """Record usage statistics (thread-safe)."""
+        with self._usage_lock:
+            if model not in self._usage:
+                self._usage[model] = ProviderUsage()
+            self._usage[model].record(response)
 
     def record_outcome(
         self,

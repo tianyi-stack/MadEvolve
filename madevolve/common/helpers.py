@@ -9,6 +9,7 @@ import logging
 import random
 import string
 import time
+import uuid
 from typing import Any, Callable, Optional, TypeVar
 
 T = TypeVar("T")
@@ -16,9 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def generate_uid(length: int = 12) -> str:
-    """Generate a unique identifier."""
-    chars = string.ascii_lowercase + string.digits
-    return "".join(random.choices(chars, k=length))
+    """Generate a unique identifier (thread-safe)."""
+    return uuid.uuid4().hex[:length]
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:

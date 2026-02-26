@@ -171,6 +171,7 @@ class ExecutorConfig:
     """
     mode: str = "local"                 # Options: "local", "slurm", "kubernetes"
     max_parallel_jobs: int = 4
+    num_llm_threads: int = 0            # LLM producer threads; 0 = auto (min(max_parallel_jobs, 4))
     timeout: float = 7200.0             # Per-job timeout in seconds
 
     # Local execution settings

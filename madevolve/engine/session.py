@@ -251,9 +251,12 @@ class EvolutionSession:
         else:
             self._state.generations_without_improvement += 1
 
+        # Always record the cumulative best in GenerationStats so that
+        # history.json is monotonically non-decreasing, even if the caller
+        # passes a stale or reset value.
         stats = GenerationStats(
             generation=generation,
-            best_score=best_score,
+            best_score=self._state.best_score,
             avg_score=avg_score,
             programs_evaluated=programs_evaluated,
             improvements=improvements,

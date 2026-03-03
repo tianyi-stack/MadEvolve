@@ -69,7 +69,7 @@ def register_adapter(name: str, adapter_class: Type[ScenarioAdapter]) -> None:
     Register a custom adapter for a scenario.
 
     Args:
-        name: Scenario name (e.g., 'trading', 'bao')
+        name: Scenario name
         adapter_class: ScenarioAdapter subclass
 
     Example:

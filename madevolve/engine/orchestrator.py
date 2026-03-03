@@ -131,10 +131,21 @@ class EvolutionOrchestrator:
 
         # Runtime state
         self._pending_jobs: Dict[str, PendingJob] = {}
-        self._best_program_id: Optional[str] = None
-        self._best_score: float = float("-inf")
-        self._stagnation_counter: int = 0
         self._state_lock = threading.RLock()
+
+        # Restore best-score tracking from checkpoint, or start fresh
+        if checkpoint_path and self.session.state:
+            self._best_program_id: Optional[str] = self.session.state.best_program_id
+            self._best_score: float = self.session.state.best_score
+            self._stagnation_counter: int = self.session.state.generations_without_improvement
+            logger.info(
+                f"Restored best_score={self._best_score:.4f} "
+                f"(program={self._best_program_id}) from checkpoint"
+            )
+        else:
+            self._best_program_id: Optional[str] = None
+            self._best_score: float = float("-inf")
+            self._stagnation_counter: int = 0
 
         # Initialize components lazily
         self._gateway = None

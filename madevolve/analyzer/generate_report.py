@@ -260,8 +260,8 @@ Note: Adapters must be registered before use. See module docstring for details.
         print(f"Error: Results directory not found: {results_dir}")
         sys.exit(1)
 
-    if not (results_dir / "evolution_db.sqlite").exists():
-        print(f"Error: evolution_db.sqlite not found in {results_dir}")
+    if not (results_dir / "evolution.db").exists():
+        print(f"Error: evolution.db not found in {results_dir}")
         sys.exit(1)
 
     # Auto-detect or use specified scenario

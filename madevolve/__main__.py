@@ -79,8 +79,8 @@ def main():
     run_parser.add_argument(
         "-o", "--output",
         type=str,
-        default="./results",
-        help="Output directory for results",
+        default=None,
+        help="Output directory for results (overrides results_dir in config)",
     )
     run_parser.add_argument(
         "--resume",
@@ -128,14 +128,17 @@ def main():
             import os
             os.environ['MADEVOLVE_CONFIG_PATH'] = str(Path(args.config).resolve())
 
+            # Determine base output directory: CLI -o > config results_dir > ./results
+            output_base = args.output or config_dict.get("results_dir") or "./results"
+
             # Create a timestamped run subfolder for fresh runs;
             # when resuming, use the output path as-is (user passes the exact run dir).
             if args.resume:
-                run_dir = args.output
+                run_dir = output_base
             else:
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                run_dir = str(Path(args.output) / timestamp)
+                run_dir = str(Path(output_base) / timestamp)
 
             print(f"Run directory: {run_dir}")
 

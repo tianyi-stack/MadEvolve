@@ -2,7 +2,7 @@
 Base classes and interfaces for the modular report generator.
 
 This module defines the abstract base classes that adapters must implement
-to support different evolution scenarios (BAO reconstruction, trading, etc.)
+to support different evolution scenarios.
 """
 
 from abc import ABC, abstractmethod
@@ -37,7 +37,7 @@ class AlgorithmInfo:
     metrics: Optional[BaseMetrics]
     timestamp: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    # Paths to visualization files (e.g., PnL curves)
+    # Paths to visualization files
     chart_paths: Dict[str, str] = field(default_factory=dict)
 
 
@@ -92,7 +92,7 @@ class MetricsAdapter(ABC):
     @property
     @abstractmethod
     def scenario_name(self) -> str:
-        """Return the scenario name (e.g., 'bao', 'trading')."""
+        """Return the scenario name."""
         pass
 
     @property
